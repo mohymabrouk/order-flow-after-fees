@@ -1,4 +1,4 @@
-# Project 4: the cheapest order-flow model that still pays (PLAN)
+# Order flow after fees: plan
 
 Written 2026-11-21, before any project code. The "Changes during the build" log at the end records every deviation.
 
@@ -170,3 +170,82 @@ test reads the Alpha Audit source text and executes those two functions in isola
   repeats the start timestamp (cosmetic; left as is so the tested code stays unchanged).
 - 2026-11-22 (totals): 411 symbol-days, 4.67 B quote updates, 377 M aggTrades, 55.3 GB transferred, 5.6 GB cache
   (bars 1.1, features 3.0, predictions 1.6). Wall clock about 2 h 25 min from start (22:12 UTC) to README (00:37 UTC).
+
+### Execution-timing overlay (new analysis, pre-declared 2026-11-22 ~10:55 UTC, before any overlay number was computed)
+
+The main study's test was already scored once. This is a **new analysis** that reuses the **frozen models and their
+cached forecasts** (`~/.cache/quant-research/p4/preds/{val,test}/*.npy`) and the cached bars and features. Nothing is
+retrained or refitted, and no main-study number changes.
+
+**Why.** As a stand-alone strategy no rung pays the 10 bp VIP0 round trip. But when a trade must happen anyway, the fee is paid
+whatever the timing. Any edge in *when* the order is sent is then a saving.
+
+**Parent orders.**
+- One buy and one sell of one unit at every start row k0 = 300, 360, 420, ... (every 60 s after the warm-up).
+- This is done in every (symbol, day) of a split.
+- An order is skipped if row k0 is not a valid bucket, or if its window would pass the end of the day.
+- Window W ∈ {5, 10, 30, 60} s, i.e. decision rows k0 .. k0+W−1. The start grid is the same for every W.
+
+**Rule.**
+- At decision row t (end of bucket t), the order is *favourable* if the frozen model's cached forecast for horizon h at row t
+  is > 0 for a buy, or < 0 for a sell. Rows with an invalid bucket or no forecast are not favourable.
+- Execute at the first favourable t in k0 .. k0+W−2; otherwise execute at the window end, t = k0+W−1.
+- The fill is the same as the main study at 100 ms latency: a taker buys at ask100[t] and sells at bid100[t], the quote
+  prevailing 100 ms after the decision.
+
+**Benchmarks.**
+- (a) *now*: execute at k0, with the same 100 ms latency.
+- (b) *random*: a uniformly random decision row in k0 .. k0+W−1. The exact expectation is used: the mean of the W fill prices.
+
+**Metric.**
+- Cost vs the arrival mid m0 (mid at the close of k0), in bp of m0:
+  - buy: (fill − m0)/m0 × 1e4;
+  - sell: (m0 − fill)/m0 × 1e4.
+- Saving vs a benchmark = benchmark cost − rule cost, so positive = saving.
+- Fees are identical across alternatives (one taker fill of one unit), so they are excluded.
+- Reported:
+  - the mean saving over all orders (both sides, 3 symbols);
+  - a 95 % daily block-bootstrap CI (resample days with replacement, 5,000 draws, pooled mean);
+  - the share of days with a positive mean saving.
+
+**Choices on validation only.**
+- Grid:
+  - model ∈ the 6 rungs;
+  - forecast horizon h ∈ {1, 5} s (sign(OFI) has a single entry);
+  - W ∈ {5, 10, 30, 60}.
+
+  That is 44 configurations.
+- Per model, pick (h, W) with the highest mean validation saving vs *now*.
+- Scored on test: sign(OFI), plus the two learned rungs with the highest validation saving, each at its chosen (h, W).
+  This is the primary result.
+- Also from the same single test run, descriptive only: those three models at their chosen h, for every W.
+- The choices are frozen to `results/overlay_frozen.json` with a hash.
+- Test runs once, logged to `results/overlay_test_log.jsonl` (timestamp, frozen hash, code hash). A rerun needs `--force`
+  and is logged.
+
+**Tests.**
+- Toy-book fills: buy at ask100 and sell at bid100 of the decision row; forced end-of-window execution; both benchmarks.
+- Leak test: changing forecasts, or raw quotes and trades, after decision row t leaves every decision up to t unchanged, and
+  every fill priced before the close of t unchanged.
+
+**Overlay: what happened** (2026-11-22, appended after the runs):
+- **Validation.** 44 configurations, 9 s. Best (h, W) per model, mean saving vs *now*:
+  - sign(OFI) (–, 30 s): +0.101 bp;
+  - linear (5 s, 30 s): +0.103;
+  - ridge (5 s, 60 s): +0.247;
+  - LightGBM (5 s, 60 s): +0.233;
+  - MLP (5 s, 60 s): +0.252;
+  - CNN (5 s, 60 s): +0.218.
+
+  Frozen for test: sign(OFI), MLP and ridge (`overlay_frozen.json`, hash 9b6eb8585fda1aaf).
+- **Test, run once** at 10:53 UTC (code e3450dac1864daaf), 6 s. Saving vs *now*, test (35 days × 3 symbols, 300,784 orders):
+  - sign(OFI): +0.129 bp [+0.116, +0.143];
+  - MLP: +0.298 [+0.283, +0.311];
+  - ridge: +0.301 [+0.285, +0.316].
+
+  Every test day was positive. Savings vs *random* are the same to 3 decimals.
+- **Forced rerun** at 10:54 UTC (code f40eac6c2d93ebb5, logged `forced_rerun: true`). Same frozen configuration. It only
+  added a per-symbol and per-side decomposition, and the pooled results were checked identical.
+- **After the runs**, only report and figure code changed: the summary figure `fig_summary.png` for the README top, and its
+  panel title.
+- **Tests:** 19 pass (14 + 5 overlay tests). Overlay wall clock about 10 min (10:50-10:58 UTC), including README.
