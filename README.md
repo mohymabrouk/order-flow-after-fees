@@ -1,4 +1,5 @@
-# Project 4: the cheapest order-flow model that still pays
+# Order flow after fees: which order-flow model pays on a crypto perpetual?
+[![tests](https://github.com/mohymabrouk/order-flow-after-fees/actions/workflows/tests.yml/badge.svg)](https://github.com/mohymabrouk/order-flow-after-fees/actions/workflows/tests.yml)
 
 **Question.** What is the cheapest order-flow model whose short-horizon forecasts still pay the spread and fees on a real
 crypto perpetual?
@@ -8,11 +9,36 @@ parameters) up to a DeepLOB-style CNN+LSTM (7,749 parameters). All six use ident
 Binance USDT-M BTC, ETH and SOL perpetuals at the real best bid/ask after a latency, and pay Binance fees. Each is scored on
 net P&L, on a test period touched once.
 
+A second analysis reuses the same frozen models, with no retraining, to *time* trades that have to happen anyway. There the
+fee is paid whatever the timing, so any edge is a saving.
+
 ## Headline
 
-**At zero fees, the cheapest model already pays the spread. No rung pays the spread plus VIP0 taker fees, and none pays
-the cheaper 3 bp tier convincingly either.**
+**As a trading strategy, no order-flow model pays Binance fees. As an execution timer, the same frozen models save
+0.13-0.30 bp on every order, on every test day.**
 
+![Compute cost vs (a) net P&L as a strategy and (b) saving as an execution timer](results/fig_summary.png)
+
+`results/fig_summary.png` plots CPU µs per prediction against two outcomes on the test period:
+- (a) net bp per trade as a stand-alone taker strategy, at three fee levels;
+- (b) bp saved per order when the model times a buy or sell that must be done within W seconds.
+
+Error bars are 95 % daily block-bootstrap CIs.
+
+- **Execution timing** (new analysis on the frozen models; design pre-declared in PLAN.md before any number was computed):
+  - The rule: execute a must-do buy at the first second the model predicts an up-move (a sell: a down-move), else at the
+    window end. The fill is a taker fill 100 ms later.
+  - Against executing at once, it saves (test, 300,784 parent orders, 35 days × 3 symbols):
+    - **ridge, 72 parameters, ~10 µs, W = 60 s:** **+0.30 bp per order** (95 % CI +0.29 to +0.32);
+    - the MLP: +0.30 bp (+0.28 to +0.31);
+    - the zero-parameter sign(OFI), W = 30 s: +0.13 bp (+0.12 to +0.14).
+  - Every test day was positive for all three. The saving holds on each symbol and on both sides.
+  - Against a uniformly random second, the savings are the same.
+  - For scale: 0.30 bp is about 6 % of the VIP0 taker fee (5 bp per side). The timed order costs −0.27 bp against the
+    arrival mid, i.e. it buys below it on average; executing at once costs +0.03 bp.
+  - So for timing, the cheapest model that pays is the zero-parameter sign(OFI), and ridge more than doubles its saving.
+    The larger models tested do not beat ridge: the MLP is equal on test, and LightGBM and the CNN were below ridge on
+    validation.
 - **Zero fees.** The zero-parameter rule (sign of the last 1-second CKS OFI, ~5 µs per prediction) pays the quoted spread.
   - On the 35 sampled test days (2024-01-11 → 2024-03-30, 3 symbols), taker, 100 ms latency, 5 s holds: +0.11 bp per trade
     over 1.5 M trades.
@@ -69,6 +95,96 @@ Notes on the table:
 `results/fig_frontier.png`: CPU µs per prediction against net bp per trade (left) and mean daily net P&L (right, symlog),
 taker, 100 ms, at each fee level. At zero fees the curve rises from rung 1 to rung 3, then is flat. With fees it is noise
 around a loss.
+
+## Execution-timing overlay (new analysis with the frozen models)
+
+**Status.**
+- This analysis was added after the main study's one-shot test.
+- It uses the frozen models' cached forecasts (`~/.cache/quant-research/p4/preds/`) and the cached bars. Nothing was retrained
+  or refitted, and no main-study number changed.
+- The design was written into PLAN.md ("Execution-timing overlay") before any overlay number was computed.
+- Choices were made on validation and frozen (`results/overlay_frozen.json`, hash `9b6eb8585fda1aaf`), then test was scored.
+  Runs are logged in `results/overlay_test_log.jsonl`.
+
+**Design.**
+- **Parent orders.** One buy and one sell of one unit, at a start every 60 s of every (symbol, day); 300,784 orders per
+  configuration on test. Each must be executed within a window of W ∈ {5, 10, 30, 60} s.
+- **Rule.** At each second t of the window, the order is *favourable* if the frozen model's forecast at t (mid change over the
+  next h seconds) is > 0 for a buy or < 0 for a sell. The order is executed at the first favourable second, otherwise at the
+  last second of the window.
+- **Fill.** As in the main study at 100 ms latency: a taker buys at the ask, or sells at the bid, prevailing 100 ms after
+  the decision.
+- **Benchmarks:**
+  - *now*: execute at the window start, also with 100 ms latency;
+  - *random*: a uniformly random second of the window, using its exact expectation.
+- **Metric.**
+  - Execution price vs the arrival mid, in bp, signed so that positive = saving.
+  - Fees are one taker fill in every alternative, so they cancel.
+  - CIs come from a 95 % daily block bootstrap (5,000 resamples of the 35 test days); the share of positive days is reported
+    alongside.
+- **Validation choices.** The grid was 44 configurations: 6 models × forecast horizon h ∈ {1, 5} s × W; sign(OFI) has a
+  single h. Per model, (h, W) maximises the mean validation saving against *now*. On test, sign(OFI) and the two best learned
+  models are scored.
+
+  | model | best validation (h, W) | validation saving vs now (bp) | scored on test |
+  |---|---|---|---|
+  | 1 sign(OFI) | (–, 30 s) | +0.101 | yes |
+  | 2 linear CKS OFI | (5 s, 30 s) | +0.103 | no |
+  | 3 ridge | (5 s, 60 s) | +0.247 | yes |
+  | 4 LightGBM | (5 s, 60 s) | +0.233 | no |
+  | 5 MLP | (5 s, 60 s) | **+0.252** | yes |
+  | 6 CNN+LSTM | (5 s, 60 s) | +0.218 | no |
+
+**Test results** (primary: the validation-chosen h and W):
+
+| model | h | W | orders | saving vs now, bp [95 % CI] | days > 0 | saving vs random, bp [95 % CI] | cost: rule / now, bp vs arrival mid | executed at start | forced at window end | mean delay |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 sign(OFI) | – | 30 s | 300,784 | **+0.129** [+0.116, +0.143] | 100 % | +0.129 [+0.116, +0.143] | −0.103 / +0.026 | 50 % | 0.0 % | 1.1 s |
+| 5 MLP | 5 s | 60 s | 300,784 | **+0.298** [+0.283, +0.311] | 100 % | +0.298 [+0.283, +0.311] | −0.272 / +0.026 | 50 % | 0.3 % | 2.6 s |
+| 3 ridge | 5 s | 60 s | 300,784 | **+0.301** [+0.285, +0.316] | 100 % | +0.301 [+0.285, +0.316] | −0.275 / +0.026 | 50 % | 0.3 % | 2.6 s |
+
+**By symbol and side** (test, primary configs; saving vs now in bp; `results/overlay_test_breakdown.csv`):
+
+| model | BTC | ETH | SOL | buys | sells |
+|---|---|---|---|---|---|
+| 1 sign(OFI) | +0.128 | +0.129 | +0.131 (94 % of days > 0) | +0.118 | +0.140 |
+| 5 MLP | +0.321 | +0.329 | +0.244 | +0.253 | +0.343 |
+| 3 ridge | +0.323 | +0.338 | +0.243 (97 % of days > 0) | +0.295 | +0.308 |
+
+Every 95 % CI in this table excludes 0. Days > 0 is 100 % except where noted.
+
+**By window** (test, descriptive, same run; saving vs now in bp):
+
+| model | W = 5 s | 10 s | 30 s | 60 s |
+|---|---|---|---|---|
+| 1 sign(OFI) | +0.108 | +0.127 | +0.129 | +0.129 |
+| 5 MLP | +0.194 | +0.250 | +0.288 | +0.298 |
+| 3 ridge | +0.190 | +0.254 | +0.292 | +0.301 |
+
+![Execution-timing overlay](results/fig_overlay.png)
+
+`results/fig_overlay.png`: test saving per order by window, against both benchmarks. Squares mark the validation-chosen W.
+
+How to read it:
+- **Where the saving comes from.** Half of the orders find a favourable signal at once and execute immediately.
+- The other half wait a few seconds, which is when the model predicted an adverse move. They execute after the move, at a
+  better price. The timed buy ends up 0.27 bp *below* the arrival mid on average.
+- The saving is 0.1-0.3 bp per order: small against a 5 bp fee, but it comes on every order and every day.
+- **Models.** The learned models (1 s accuracy ~68 %) beat sign(OFI) (~62 %) by 2.3×. Among learned models, ridge (72
+  parameters, ~10 µs) equals the MLP (3,781 parameters, ~60 µs).
+- **Window length.** Beyond W ≈ 30 s little is gained, since almost every order finds a favourable second within a few seconds.
+- **Benchmarks.** The two agree to the third decimal, as expected when the mid is close to a martingale over a few seconds.
+
+Limits specific to this analysis:
+- Orders are one unit at the touch, with no market impact. A large order that sweeps the book or leaks information would see
+  a smaller saving.
+- Parent orders arrive on a fixed 60 s grid on both sides. Real orders are often correlated with the flow, e.g. buying after
+  up-moves.
+- The forecasts are used only through their sign, at 1-s granularity.
+- **Test runs.** The overlay test was scored twice:
+  - The second run (logged with `forced_rerun: true`) only added the per-symbol and per-side decomposition.
+  - The frozen configuration was the same in both runs.
+  - The pooled results were identical across the two runs (checked).
 
 ## Latency × fee sensitivity
 
@@ -166,7 +282,7 @@ of rungs 3-6 are wiped out in late February 2024 (test days 22-29, the late-Febr
   - Each zip was checked against its `.CHECKSUM` (SHA-256), 2026-11-21.
   - Requests used a generic User-Agent.
 - **Window:** every day with USDT-M bookTicker files, **2023-05-16 → 2024-03-30**. The S3 listing ends on 2024-03-30, earlier
-  than the "before 2024-06" in the brief.
+  than the mid-2024 end the plan had assumed.
 - **Symbols:** BTCUSDT, ETHUSDT and SOLUSDT perpetuals.
 - **Sampling:** every **Tuesday, Thursday and Saturday**, fixed before any result. That gives 137 days per symbol (411
   symbol-days):
@@ -235,7 +351,7 @@ Fitting:
 - Rung 1 has no magnitude, so it trades every non-zero OFI.
 
 **Fees:** Binance USDT-M VIP0 is 0.05 % taker / 0.02 % maker. The cheaper tier is 0.03 % / 0.01 %. Zero is also tested.
-- These levels are as specified in the brief on 2026-11-21. Binance's fee page is rendered by JavaScript and could not be
+- These levels were fixed in the study design on 2026-11-21. Binance's fee page is rendered by JavaScript and could not be
   fetched to re-check them.
 - No BNB discount and no funding payments are applied.
 
@@ -269,6 +385,12 @@ Fitting:
   - The most accurate forecasts (1 s, ~69 %) have an edge about 70 times smaller than VIP0 fees.
   - The few fee-paying test results come from 5-minute, ~51 %-accurate forecasts on a few hundred trades.
   - Those results are not significant once multiple testing (DSR) or day-level uncertainty (bootstrap) is accounted for.
+- **The same forecasts are worth more as an execution timer than as a strategy.**
+  - Timing a trade that must happen anyway turns a 0.1-0.3 bp per-second edge from useless into a consistent saving. The fee
+    is sunk.
+  - The frozen ridge saves 0.30 bp per order, with every one of the 35 test days positive.
+  - The cost frontier shifts too: the zero-parameter rule already saves 0.13 bp, and a 72-parameter linear model captures all
+    of what a neural network does.
 
 ## Limits
 
@@ -288,7 +410,7 @@ Fitting:
     count. This is optimistic, although the trade-through rule also builds in adverse selection.
   - Zero-fee results are a frictionless upper bound. They assume millions of trades a day with no capacity or impact limit.
 - **Costs.**
-  - Fee levels come from the brief and were not re-verified on Binance.
+  - Fee levels were fixed in the design and not re-verified on Binance's site.
   - Funding is ignored (holds are ≤ 5 min; funding is charged every 8 h).
   - Expected cost uses the mean train spread, not the live spread.
 - **Models.**
@@ -300,7 +422,7 @@ Fitting:
 ## Simplifications and deviations (all logged in PLAN.md, "Changes during the build")
 
 Data and scope:
-1. The bookTicker window ends **2024-03-30**, not "before 2024-06".
+1. The bookTicker window ends **2024-03-30**; the plan had assumed mid-2024.
 2. Sampling is **Tue/Thu/Sat** (3 days a week), not 2. Total transfer was 55.3 GB, under the 60 GB raw budget; at most two days of zips
    (≤ 1 GB) were on disk at once.
 3. **The trades + bookDepth extension (2024-06 → 2026-10) was not done.** It was optional. Without L1 quotes it cannot measure
@@ -329,6 +451,19 @@ Implementation:
     unchanged). Its duration is in `seconds` (291 s).
 12. Training sizes: 25 % of train buckets for rungs 2-5, 1.5 M rows for LightGBM, 1.5 M windows for the CNN. Early-stopping
     patience is 1.
+
+Execution-timing overlay (added 2026-11-22, after the main test):
+
+13. **It is a new analysis.** It reuses the frozen models' cached forecasts, with no retraining. Its design was pre-declared in
+    PLAN.md before any overlay number was computed. Its choices were made on validation and frozen
+    (`overlay_frozen.json`, `9b6eb8585fda1aaf`) before its test was scored.
+14. **The overlay test was run twice.**
+    - The first run (code hash `e3450dac1864daaf`) produced the primary table.
+    - A `--force` rerun (code hash `f40eac6c2d93ebb5`, logged) added only the per-symbol and per-side decomposition, with the
+      same frozen configuration and identical pooled results.
+    - After that, only report and figure code changed (the summary figure).
+15. The validation selection favours the longest window offered (60 s for the learned models), because more time can only add
+    options. The by-window table shows the whole test curve.
 
 ## Literature (verified by me, 2026-11-21; only these points are cited)
 
@@ -363,13 +498,17 @@ export PYTHONIOENCODING=utf-8
 .venv/Scripts/python -m ofp.cli freeze    # choose on validation, write frozen_config.json + hash
 .venv/Scripts/python -m ofp.cli test      # once (~5 min); a rerun needs --force and is logged
 .venv/Scripts/python -m ofp.cli report    # results/tables.md, CSVs, figures
-.venv/Scripts/python -m pytest            # 14 tests
+# execution-timing overlay (uses the frozen models' cached forecasts; seconds)
+.venv/Scripts/python -m ofp.cli overlay_validate  # 44-config grid on validation, choose + freeze overlay_frozen.json
+.venv/Scripts/python -m ofp.cli overlay_test      # once; a rerun needs --force and is logged in overlay_test_log.jsonl
+.venv/Scripts/python -m ofp.cli overlay_report    # overlay_tables.md, fig_overlay.png, fig_summary.png
+.venv/Scripts/python -m pytest            # 19 tests
 ```
 
 Every process pins OMP/MKL/OpenBLAS/Polars to 2 threads; torch and LightGBM also use 2 threads. Caches go to
 `~/.cache/quant-research/p4/`. `scripts/thin_slice.py` is the first end-to-end slice: 6 BTC days, linear OFI, taker simulation.
 
-**Tests** (`tests/`, 14 pass):
+**Tests** (`tests/`, 19 pass):
 1. CKS OFI on a hand-made update sequence;
 2. targets strictly in the future;
 3. taker fills at ask/bid after each latency on a toy book, plus the maker trade-through rule;
@@ -377,7 +516,12 @@ Every process pins OMP/MKL/OpenBLAS/Polars to 2 threads; torch and LightGBM also
 5. leak test: perturbing raw quotes and trades after bucket t leaves features and every rung's forecasts at t unchanged;
 6. `sharpe` and `deflated_sharpe` equal Alpha Audit's on fixed inputs (the original source is executed in isolation, not
    imported);
-7. bucketing loses no trades, including trades on bucket boundaries.
+7. bucketing loses no trades, including trades on bucket boundaries;
+8. overlay (`test_overlay.py`):
+   - toy-book fills: buy at ask and sell at bid 100 ms after the decision, forced end-of-window execution, both benchmarks,
+     invalid rows never favourable;
+   - leak tests: perturbing forecasts and quotes after decision row t, or raw quotes and trades after the close of t, leaves
+     every decision up to t, and every fill priced before close(t), unchanged.
 
 ## Files
 
@@ -399,8 +543,13 @@ The `results/` folder:
 | `train_spreads.json` | mean train spread per symbol |
 | `test_log.jsonl` | the one-shot test log |
 | `thin_slice.csv` | the thin-slice output |
+| `overlay_tables.md` | all overlay tables, including the full validation grid |
+| `overlay_validation.csv` | the 44 overlay validation configurations |
+| `overlay_frozen.json` | the frozen overlay choices |
+| `overlay_test.csv`, `overlay_test_by_window.csv`, `overlay_test_breakdown.csv` | overlay test results |
+| `overlay_test_log.jsonl` | the overlay test log |
 | `fig_*.png` | figures |
 
 Elsewhere:
-- Code: `src/ofp/` — config, bars, download, features, models, sim, metrics, pipeline, report, cli.
+- Code: `src/ofp/` — config, bars, download, features, models, sim, metrics, pipeline, report, overlay, cli.
 - Data manifest: `~/.cache/quant-research/p4/manifest.csv`, with per-day raw sizes and the bar verification counts.
