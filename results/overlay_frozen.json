@@ -1,0 +1,75 @@
+{
+ "created_utc": "2026-11-22T10:52:52+00:00",
+ "rule": "per model, (h, W) with the highest mean validation saving vs 'now'; test = sign_ofi + top-2 learned rungs",
+ "grid": {
+  "windows": [
+   5,
+   10,
+   30,
+   60
+  ],
+  "forecast_h": [
+   1,
+   5
+  ],
+  "start_step_s": 60,
+  "latency_ms": 100
+ },
+ "n_configs": 44,
+ "choices": [
+  {
+   "model": "sign_ofi",
+   "h": 1,
+   "W": 30,
+   "val_save_vs_now_bp": 0.10133665041856191,
+   "val_save_vs_random_bp": 0.1010865016498543
+  },
+  {
+   "model": "mlp",
+   "h": 5,
+   "W": 60,
+   "val_save_vs_now_bp": 0.25195007141024467,
+   "val_save_vs_random_bp": 0.25183452693201885
+  },
+  {
+   "model": "ridge",
+   "h": 5,
+   "W": 60,
+   "val_save_vs_now_bp": 0.24682159018681135,
+   "val_save_vs_random_bp": 0.24670604570858548
+  }
+ ],
+ "val_best_per_model": {
+  "cnn_lstm": {
+   "h": 5,
+   "W": 60,
+   "save_vs_now_bp": 0.21758153289686116
+  },
+  "lgbm": {
+   "h": 5,
+   "W": 60,
+   "save_vs_now_bp": 0.23336038631524364
+  },
+  "linear_ofi": {
+   "h": 5,
+   "W": 30,
+   "save_vs_now_bp": 0.10348566664758856
+  },
+  "mlp": {
+   "h": 5,
+   "W": 60,
+   "save_vs_now_bp": 0.25195007141024467
+  },
+  "ridge": {
+   "h": 5,
+   "W": 60,
+   "save_vs_now_bp": 0.24682159018681135
+  },
+  "sign_ofi": {
+   "h": 1,
+   "W": 30,
+   "save_vs_now_bp": 0.10133665041856191
+  }
+ },
+ "hash": "9b6eb8585fda1aaf"
+}
