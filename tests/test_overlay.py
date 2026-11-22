@@ -83,7 +83,7 @@ def test_overlay_decision_uses_only_the_past():
 
 def test_overlay_leak_end_to_end_from_raw(raw):
     """Perturb raw quotes/trades after the close of bucket T: decisions up to T and fills priced before close(T) unchanged."""
-    from tests.test_leak import _perturb, T
+    from test_leak import _perturb, T  # tests/ is on sys.path (pytest prepend import mode)
 
     quotes, trades, day = raw
     n_sec = 900
