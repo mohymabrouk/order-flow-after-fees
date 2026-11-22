@@ -1,1 +1,1 @@
-"""Order-flow profit study (project 4)."""
+"""Order flow after fees: which order-flow model pays on a crypto perpetual."""
