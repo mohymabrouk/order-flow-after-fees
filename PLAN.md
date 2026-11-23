@@ -249,3 +249,98 @@ whatever the timing. Any edge in *when* the order is sent is then a saving.
 - **After the runs**, only report and figure code changed: the summary figure `fig_summary.png` for the README top, and its
   panel title.
 - **Tests:** 19 pass (14 + 5 overlay tests). Overlay wall clock about 10 min (10:50-10:58 UTC), including README.
+
+### Change 16: maker-or-taker per order (new analysis, pre-declared 2026-11-23 ~11:30 UTC, before any maker number was computed)
+
+The overlay above only *times a taker* order. At VIP0 the maker fee is below the taker fee, a gap about 10x the overlay's
+saving. This change asks: should each must-do order rest passively at the near touch first, and does the frozen model help
+decide when not to? It reuses the frozen models' cached forecasts and the overlay's order set; nothing is retrained.
+
+**Fees (checked 2026-11-23 on public Wayback Machine captures of binance.com).**
+- USDⓈ-M fee schedule page (`/en/fee/futureFee`), capture 2023-05-31: VIP 0 `makerCommission` 0.0002, `takerCommission` 0.0004.
+- USDⓈ-M fee FAQ ("Binance Futures Fee Structure & Fee Calculations", FAQ 360033544231): the USDⓈ-M example uses taker
+  0.040 % in the 2023-06-02 and 2023-09-27 captures, and "regular user's maker commission: 0.02%; taker commission: 0.05%" in
+  the 2024-02-20 and 2024-03-24 captures.
+- So the maker fee was 2 bp throughout. The taker fee was 4 bp until at least 2023-09-27 and 5 bp by 2024-02-20; I could not
+  find the date of the change. Validation (2023-11-23 → 2024-01-08) and the first half of test may be under either.
+- **Headline fees: taker 5 bp / maker 2 bp** (the rate published during the test period, and the main study's VIP0).
+  **Sensitivity: taker 4 bp / maker 2 bp**, re-scoring the frozen choices (descriptive). No BNB discount.
+
+**Data.** The fill rules need every aggTrade and the queue at the touch, which the 1-s bars do not keep.
+- Stage `maker_data` re-downloads, for every validation and test (symbol, day) of the main study (165 symbol-days), the same
+  USDⓈ-M `bookTicker` and `aggTrades` daily zips (SHA-256 checked; ~29 GB + ~2.6 GB per the manifest), one day at a time.
+- bookTicker is streamed in chunks and reduced to the quote state on a 100 ms grid: G_j = day start + j × 100 ms,
+  j = 0..864,001, state = the last update with ts < G_j (ties: highest update_id; the same rule as the bars). Columns bid,
+  ask, bidq, askq. aggTrades are kept as (ts, price, qty, is_buyer_maker). Zips are deleted once the day is verified.
+- **Verification against the cached bars, per day:** the grid states at j = 10(k+1) and 10(k+1)+1 must equal the bars' close
+  and close + 100 ms quotes (bid, ask, bid100, ask100) exactly for all 86,400 buckets; per-bucket trade counts and buy/sell
+  quantities must equal the bars. A day that fails stops the stage.
+- A dry run on two train days (BTC, SOL), scratch outputs deleted afterwards, checks the code before any validation day is
+  processed. Train days have no cached forecasts, so the dry run has no model signal.
+
+**Order set and latency (identical to the overlay).**
+- Same parent orders: one buy and one sell at every start row k0 of `overlay.order_starts`, every validation / test
+  (symbol, day); 300,784 test orders.
+- **Order size: 10,000 USDT** notional (q = 10,000 / arrival mid, in coin). Used only by the queue rule. No partial fills, no
+  impact; the taker leg is assumed to fill at the touch.
+- Every action (post, cross, cancel) takes effect 100 ms after its decision, at the quote prevailing then (as in the
+  overlay: bid100 / ask100).
+
+**Policy, per order (side s = +1 buy, −1 sell), decided once at the close of bucket k0.**
+- Signal f = the frozen model's cached forecast at row k0 for horizon h (mid change in bp; sign(OFI) gives −1/0/+1).
+- If s × f > θ (price expected to move away by more than θ bp): **cross now** as taker, at ask100[k0] (buy) / bid100[k0] (sell).
+- Else **post** a limit at the near touch prevailing at t_post = close(k0) + 100 ms: p = bid100[k0] (buy) / ask100[k0] (sell).
+  It rests during (t_post, t_post + T].
+- If it is not filled by then, it is cancelled and replaced by a taker order, decided at close(k0 + T) and effective 100 ms
+  later, i.e. exactly at t_post + T: fill at ask100[k0+T] (buy) / bid100[k0+T] (sell). A passive fill up to that instant
+  means no taker order (no double fill).
+- T = 0 is the taker-at-once order.
+
+**Fill rules** (aggTrades with ts strictly after t_post and ≤ t_post + T; both reported).
+- **(a) trade-through:** filled at p at the first aggTrade priced strictly through p (price < p for a buy, > p for a sell).
+- **(b) queue:** queue ahead Q0 = the displayed size at the near touch at t_post (bidq / askq of the grid state at
+  close(k0) + 100 ms). The order joins the back of the queue. Let V(t) be the cumulative quantity of opposite-aggressor
+  aggTrades (seller-initiated for a buy, `is_buyer_maker` true; buyer-initiated for a sell) at or through p after t_post. The
+  order fills at p at the first aggTrade where V > Q0 + q. Cancellations ahead are ignored (conservative).
+- **Headline rule: (a) trade-through.** It credits a fill only when the market has traded through the order, so every fill
+  carries the adverse move. If for a model (b) gives the lower test saving vs taker-at-once, the README headline reports
+  (b) for that model (the headline is always the lower of the two).
+
+**Cost.** In bp of the arrival mid m0 (mid at the close of k0), fees included: buy (P − m0)/m0 × 1e4 + fee × P/m0 × 1e4,
+sell (m0 − P)/m0 × 1e4 + fee × P/m0 × 1e4; fee = maker 2 bp on a passive fill, taker 5 bp otherwise.
+
+**Benchmarks** (same orders, same fees):
+1. *taker at once*: cross at k0 (the overlay's "now" plus the taker fee);
+2. *always post, then cross* (no signal, θ = +∞), T chosen on validation per rule;
+3. *the existing overlay timing*: the frozen overlay rule for that model (sign(OFI) W = 30 s; ridge and MLP h = 5 s,
+   W = 60 s), taker fill plus the taker fee.
+
+**Metrics.**
+- Mean cost; **saving vs taker at once** (= its cost − policy cost, positive = cheaper), with the overlay's 95 % daily block
+  bootstrap (5,000 resamples of days, seed 20260401) and the share of days with a positive mean.
+- The same paired saving vs always-post and vs the overlay timing.
+- Share of orders posted; fill rate (filled / posted); mean wait.
+- **Adverse selection on filled orders:** with mid(t) = mid of the grid state at the first 100 ms grid point after t,
+  (i) adverse mid move after the fill = −s × (mid(t_fill + τ) − mid(t_fill)) / m0 × 1e4, positive = moved against the order;
+  (ii) markout = s × (mid(t_fill + τ) − p) / m0 × 1e4; τ ∈ {1, 10} s.
+- By symbol and by side (descriptive).
+
+**Choices on validation only.**
+- Grid per fill rule: model ∈ the 6 rungs; forecast horizon h ∈ {1, 5, 30} s (sign(OFI): one entry); θ ∈ {0, 0.1, 0.25, 0.5,
+  1, 2} bp (sign(OFI): θ = 0 only); T ∈ {1, 5, 10, 30} s. Plus always-post at each T. 368 configurations per rule, 736 in all.
+- Per (model, rule): (h, θ, T) with the highest mean validation saving vs taker at once (ties: smaller T, then larger θ,
+  then smaller h). Always-post: T the same way.
+- **Scored on test:** sign(OFI), ridge and the MLP (the three models of the overlay test), and always-post, per rule, at
+  their frozen choices. Descriptive from the same run: the same choices at every T; the 4 bp taker-fee sensitivity.
+- Frozen to `results/maker_frozen.json` with a hash. Test runs **once**, logged to `results/maker_test_log.jsonl`
+  (timestamp, frozen hash, code hash); a rerun needs `--force` and is logged.
+- **Reproduction check:** the test stage first recomputes the overlay's primary test numbers with the unchanged overlay code
+  and checks them against `results/overlay_test.csv`; the result is logged. A pytest does the same (skips without the cache).
+
+**Optional fill-probability model (arXiv 2306.05479 style): not done.** Fitting one needs tick data outside validation
+(train days are not re-downloaded) or fitting and selecting on the same 20 validation days. Recorded as not done.
+
+**Tests:** trade-through fills only strictly through p and only after t_post; the queue rule respects Q0 + q and counts only
+opposite-aggressor volume at or through p; the decision uses only the forecast at k0 and later data does not change it;
+T = 0 equals taker at once; the 100 ms grid builder equals the bars' quote states on the synthetic book.
+
