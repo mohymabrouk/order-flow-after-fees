@@ -1,0 +1,198 @@
+{
+ "created_utc": "2026-11-23T12:15:40+00:00",
+ "rule": "per (model, fill rule): (h, theta, T) with the highest mean validation saving vs taker at once (ties: smaller T, larger theta, smaller h); always_post: T the same way",
+ "design": {
+  "waits_s": [
+   1,
+   5,
+   10,
+   30
+  ],
+  "thetas_bp": [
+   0.0,
+   0.1,
+   0.25,
+   0.5,
+   1.0,
+   2.0
+  ],
+  "forecast_h": [
+   1,
+   5,
+   30
+  ],
+  "rules": [
+   "through",
+   "queue"
+  ],
+  "headline_rule": "through",
+  "order_notional_usdt": 10000.0,
+  "markouts_s": [
+   1,
+   10
+  ],
+  "fee_taker": 0.0005,
+  "fee_maker": 0.0002,
+  "fee_taker_alt": 0.0004,
+  "latency_ms": 100,
+  "grid_ms": 100,
+  "test_models": [
+   "sign_ofi",
+   "ridge",
+   "mlp"
+  ],
+  "start_step_s": 60,
+  "overlay_windows": [
+   5,
+   10,
+   30,
+   60
+  ]
+ },
+ "n_configs": 736,
+ "n_val_orders": 171742,
+ "overlay_frozen_hash": "9b6eb8585fda1aaf",
+ "choices": [
+  {
+   "rule": "through",
+   "model": "always_post",
+   "h": 0,
+   "theta": Infinity,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 1.5030879822256769,
+   "val_fill_rate_pct": 77.57217221180608,
+   "val_posted_pct": 100.0
+  },
+  {
+   "rule": "queue",
+   "model": "always_post",
+   "h": 0,
+   "theta": Infinity,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 0.970035010313265,
+   "val_fill_rate_pct": 69.45767488441965,
+   "val_posted_pct": 100.0
+  },
+  {
+   "rule": "through",
+   "model": "sign_ofi",
+   "h": 1,
+   "theta": 0.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 0.8470232441146138,
+   "val_fill_rate_pct": 80.31221282585179,
+   "val_posted_pct": 50.05589780018865
+  },
+  {
+   "rule": "queue",
+   "model": "sign_ofi",
+   "h": 1,
+   "theta": 0.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 0.626989219315862,
+   "val_fill_rate_pct": 74.47625251550014,
+   "val_posted_pct": 50.05589780018865
+  },
+  {
+   "rule": "through",
+   "model": "linear_ofi",
+   "h": 1,
+   "theta": 2.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 1.5030879822256769,
+   "val_fill_rate_pct": 77.57217221180608,
+   "val_posted_pct": 100.0
+  },
+  {
+   "rule": "queue",
+   "model": "linear_ofi",
+   "h": 1,
+   "theta": 2.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 0.970035010313265,
+   "val_fill_rate_pct": 69.45767488441965,
+   "val_posted_pct": 100.0
+  },
+  {
+   "rule": "through",
+   "model": "ridge",
+   "h": 1,
+   "theta": 2.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 1.5030879822256769,
+   "val_fill_rate_pct": 77.57217221180608,
+   "val_posted_pct": 100.0
+  },
+  {
+   "rule": "queue",
+   "model": "ridge",
+   "h": 5,
+   "theta": 1.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 0.9706025457097223,
+   "val_fill_rate_pct": 69.45082225148892,
+   "val_posted_pct": 99.91848237472489
+  },
+  {
+   "rule": "through",
+   "model": "lgbm",
+   "h": 1,
+   "theta": 2.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 1.5030879822256769,
+   "val_fill_rate_pct": 77.57217221180608,
+   "val_posted_pct": 100.0
+  },
+  {
+   "rule": "queue",
+   "model": "lgbm",
+   "h": 30,
+   "theta": 2.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 0.9709920422895706,
+   "val_fill_rate_pct": 69.448102268887,
+   "val_posted_pct": 99.93245682477205
+  },
+  {
+   "rule": "through",
+   "model": "mlp",
+   "h": 1,
+   "theta": 2.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 1.5030879822256769,
+   "val_fill_rate_pct": 77.57217221180608,
+   "val_posted_pct": 100.0
+  },
+  {
+   "rule": "queue",
+   "model": "mlp",
+   "h": 1,
+   "theta": 1.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 0.970179181944123,
+   "val_fill_rate_pct": 69.45683440669873,
+   "val_posted_pct": 99.99534184998427
+  },
+  {
+   "rule": "through",
+   "model": "cnn_lstm",
+   "h": 1,
+   "theta": 2.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 1.5030879822256769,
+   "val_fill_rate_pct": 77.57217221180608,
+   "val_posted_pct": 100.0
+  },
+  {
+   "rule": "queue",
+   "model": "cnn_lstm",
+   "h": 30,
+   "theta": 2.0,
+   "T": 30,
+   "val_save_vs_taker_now_bp": 0.9708006261340885,
+   "val_fill_rate_pct": 69.44996184740125,
+   "val_posted_pct": 99.9633170686262
+  }
+ ],
+ "hash": "58812cf42b6f085e"
+}
