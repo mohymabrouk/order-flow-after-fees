@@ -1,0 +1,2 @@
+{"event": "start", "frozen_hash": "58812cf42b6f085e", "code_hash": "4fd5ed01037d9d17", "forced_rerun": false, "timestamp_utc": "2026-11-23T12:17:19+00:00"}
+{"event": "done", "frozen_hash": "58812cf42b6f085e", "code_hash": "4fd5ed01037d9d17", "forced_rerun": false, "overlay_reproduced": true, "overlay_max_abs_diff": {"sign_ofi": 0.0, "mlp": 0.0, "ridge": 0.0}, "n_days": 35, "orders": 300784, "seconds": 38, "timestamp_utc": "2026-11-23T12:17:57+00:00"}
