@@ -12,10 +12,20 @@ net P&L, on a test period touched once.
 A second analysis reuses the same frozen models, with no retraining, to *time* trades that have to happen anyway. There the
 fee is paid whatever the timing, so any edge is a saving.
 
+A third analysis (Change 16) asks whether each of those orders should first rest passively at the touch, paying the 2 bp
+maker fee instead of the 5 bp taker fee, and whether the frozen models can tell when not to.
+
 ## Headline
 
 **As a trading strategy, no order-flow model pays Binance fees. As an execution timer, the same frozen models save
-0.13-0.30 bp on every order, on every test day.**
+0.13-0.30 bp on every order, on every test day. Resting each order at the touch for up to 30 s before crossing saves about
+three times more, +0.94 bp per order under the conservative fill rule, on every test day, after adverse selection. But the
+models add nothing to that choice: validation sets them to post (almost) every order, which is the same as using no model.**
+
+Context: [arXiv 2611.14117](https://arxiv.org/abs/2611.14117) (November 2026) fine-tunes a 300M-parameter order-flow model
+on Bitstamp and Bitfinex Level-3 data. Its predicted moves are smaller than the spread plus fees, "so the natural
+applications are in execution and market making". This project measures exactly those applications, with numbers, on
+Binance perps, for models of 0 to 7,749 parameters. See [Related work (2026)](#related-work-2026).
 
 ![Compute cost vs (a) net P&L as a strategy and (b) saving as an execution timer](results/fig_summary.png)
 
@@ -39,6 +49,25 @@ Error bars are 95 % daily block-bootstrap CIs.
   - So for timing, the cheapest model that pays is the zero-parameter sign(OFI), and ridge more than doubles its saving.
     The larger models tested do not beat ridge: the MLP is equal on test, and LightGBM and the CNN were below ridge on
     validation.
+- **Maker or taker per order** (new analysis, [Change 16](#maker-or-taker-per-order-change-16-new-analysis-with-the-frozen-models);
+  pre-declared in PLAN.md; same frozen models, same 300,784 test orders, same 100 ms latency; test run once):
+  - The rule: cross now if the frozen forecast says the price will move away by more than θ bp; otherwise post a limit at
+    the near touch, wait up to T seconds, then cancel and cross. Fees 5 bp taker / 2 bp maker. θ, T and the forecast
+    horizon were chosen on validation.
+  - **Conservative (queue) fill rule:** the order joins the back of the displayed queue and fills only when
+    opposite-side aggressive volume at or through its price exceeds the queue ahead plus the order (10,000 USDT).
+    Posting for T = 30 s then saves **+0.94 bp per order** against crossing at once (95 % CI +0.89 to +0.98); every test
+    day is positive, and 72 % of posted orders fill.
+  - Under the trade-through fill rule the saving is +1.45 bp (+1.41 to +1.50), with 79 % filled.
+  - **This is after adverse selection.** After a passive fill the mid keeps moving against the order: +0.31 bp within
+    1 s, +0.45 bp within 10 s. The unfilled 28 % are chased at 9.5 bp all-in, against 5.0 bp for crossing at once.
+  - **The models add nothing.** On validation, the best threshold for every learned model is one it (almost) never
+    reaches. On test, ridge differs from always-post by −0.000 bp (CI −0.002 to +0.001). sign(OFI) has no magnitude, so it
+    crosses on half the orders, and that costs 0.30 bp against always-post.
+  - Against the overlay's timed taker order, posting saves a further +0.64 bp for ridge and the MLP.
+  - **Fee caveat.** The VIP0 taker fee was 4 bp until at least late September 2023 (archived Binance pages). At 4 bp the
+    queue-rule saving shrinks to +0.22 bp (94 % of days positive), and the overlay's timed taker order is then 0.08 bp
+    cheaper than posting.
 - **Zero fees.** The zero-parameter rule (sign of the last 1-second CKS OFI, ~5 µs per prediction) pays the quoted spread.
   - On the 35 sampled test days (2024-01-11 → 2024-03-30, 3 symbols), taker, 100 ms latency, 5 s holds: +0.11 bp per trade
     over 1.5 M trades.
@@ -186,6 +215,141 @@ Limits specific to this analysis:
   - The frozen configuration was the same in both runs.
   - The pooled results were identical across the two runs (checked).
 
+## Maker or taker per order (Change 16, new analysis with the frozen models)
+
+**Status.**
+- Added 2026-11-23, after the overlay. It uses the frozen models' cached forecasts, the overlay's parent orders (300,784 on
+  test) and its 100 ms latency. Nothing was retrained, and no earlier number changed.
+- The design was written into PLAN.md (Change 16) before any maker number was computed. Choices were made on validation
+  and frozen (`results/maker_frozen.json`, hash `58812cf42b6f085e`).
+- The test ran **once**, on 2026-11-23T12:17Z, with code hash `4fd5ed01037d9d17`, logged in `results/maker_test_log.jsonl`.
+  There was no rerun.
+- **Reproduction check.** Before scoring, the test stage recomputed the overlay's published test numbers with the unchanged
+  overlay code. They were identical (maximum absolute difference 0.0, logged). A pytest repeats the check.
+
+**Data.**
+- The fill rules need every trade and the queue size at the touch, which the 1-s bars do not keep. So the 165 validation and
+  test symbol-days were downloaded again: the same Binance files, SHA-256 checked, 31.3 GB.
+- They hold 2.89 billion quote updates and 204 million aggregated trades. These were reduced to the best quotes and sizes on
+  a 100 ms grid, plus every aggTrade.
+- Each day was checked against the cached bars before its zips were deleted, and every day passed:
+  - the quotes at every bucket close, and at close + 100 ms, are exactly equal;
+  - trade counts and buy/sell quantities are equal for every second;
+  - row counts equal the main study's manifest.
+
+**Design.**
+- **Decision**, once per order, at the close of its start second:
+  - cross now as a taker if side × forecast > θ, i.e. the price is expected to move away by more than θ bp;
+  - otherwise post a limit at the near touch prevailing 100 ms later (the bid, for a buy);
+  - if it is not filled within T seconds, cancel and cross at the far touch prevailing at that moment (decided at the close
+    of second k0 + T, effective 100 ms later).
+- **Fill rules.** Both use aggTrades strictly after posting; there are no partial fills; the order is 10,000 USDT.
+  - (a) *trade-through*: an aggTrade prints strictly through the limit price.
+  - (b) *queue*: the order joins the back of the displayed queue (the bookTicker size at posting). It fills when
+    opposite-aggressor volume at or through its price since posting exceeds the queue ahead plus the order size.
+    Cancellations ahead of the order are ignored.
+- **Cost:** the execution price against the arrival mid, plus the fee (maker 2 bp on a passive fill, taker 5 bp
+  otherwise), in bp of the arrival mid.
+- **Benchmarks** (same orders):
+  - taker at once;
+  - always post, then cross (no signal);
+  - the overlay's timed taker order for the same model, plus the taker fee.
+- **Validation grid:** 736 configurations: per fill rule, 6 models × forecast horizon h ∈ {1, 5, 30} s × θ ∈ {0, 0.1,
+  0.25, 0.5, 1, 2} bp × T ∈ {1, 5, 10, 30} s (sign(OFI): θ = 0 only), plus always-post at each T.
+  - Per (model, rule), the configuration with the highest mean validation saving against taker at once is chosen.
+  - Scored on test: sign(OFI), ridge and the MLP (the overlay's three models), and always-post.
+- **Headline rule** (pre-declared): (a), unless (b) gives a lower saving for a model. (b) was lower for every model, so the
+  queue rule is the headline.
+
+**Validation.**
+- Every learned model's best configuration barely crosses:
+  - under (a), θ = 2 bp at h = 1 s never triggers, so it is identical to always-post (+1.503 bp);
+  - under (b), ridge, MLP, LightGBM and the CNN post ≥ 99.9 % of orders and land within 0.001 bp of always-post (+0.970).
+- T = 30 s, the longest wait offered, is chosen everywhere.
+
+**Test results** (`results/maker_test.csv`). Saving = benchmark cost − policy cost, in bp per order; positive = the policy
+is cheaper. CIs are 95 % daily block bootstraps.
+
+| fill rule | policy | h, θ, T | saving vs taker at once [95 % CI] | days > 0 | vs always-post | vs overlay timing | fill rate | cost: policy / taker at once (bp) |
+|---|---|---|---|---|---|---|---|---|
+| **(b) queue** | always post | –, ∞, 30 s | **+0.937** [+0.893, +0.979] | 100 % | – | – | 71.8 % | 4.09 / 5.03 |
+| **(b) queue** | 3 ridge | 5 s, 1 bp, 30 s | **+0.936** [+0.893, +0.978] | 100 % | −0.000 [−0.002, +0.001] | +0.635 [+0.583, +0.688] | 71.8 % | 4.09 / 5.03 |
+| **(b) queue** | 5 MLP | 1 s, 1 bp, 30 s | **+0.937** [+0.894, +0.979] | 100 % | +0.000 [−0.000, +0.001] | +0.639 [+0.589, +0.689] | 71.8 % | 4.09 / 5.03 |
+| **(b) queue** | 1 sign(OFI) | –, 0, 30 s | **+0.633** [+0.607, +0.657] | 100 % | −0.304 [−0.333, −0.273] | +0.503 [+0.473, +0.532] | 77.1 % | 4.39 / 5.03 |
+| (a) trade-through | always post | –, ∞, 30 s | +1.453 [+1.409, +1.497] | 100 % | – | – | 79.5 % | 3.57 / 5.03 |
+| (a) trade-through | 3 ridge | 1 s, 2 bp, 30 s | +1.453 [+1.409, +1.497] | 100 % | +0.000 [+0.000, +0.000] | +1.152 [+1.096, +1.209] | 79.5 % | 3.57 / 5.03 |
+| (a) trade-through | 5 MLP | 1 s, 2 bp, 30 s | +1.453 [+1.409, +1.497] | 100 % | +0.000 [+0.000, +0.000] | +1.155 [+1.101, +1.210] | 79.5 % | 3.57 / 5.03 |
+| (a) trade-through | 1 sign(OFI) | –, 0, 30 s | +0.834 [+0.814, +0.854] | 100 % | −0.619 [−0.649, −0.589] | +0.705 [+0.679, +0.731] | 82.3 % | 4.19 / 5.03 |
+
+Fill rate = filled / posted. sign(OFI) posts 50 % of orders; ridge posts 99.8 % under (b); the others post every order.
+
+**Adverse selection** (filled orders, always-post at T = 30 s, test):
+
+| fill rule | mid move against the order after the fill, 1 s / 10 s | markout vs the fill price, 1 s / 10 s | all-in cost of a filled / chased order |
+|---|---|---|---|
+| (b) queue | +0.31 / +0.45 bp | −1.60 / −1.74 bp | 1.96 / 9.51 bp |
+| (a) trade-through | +0.38 / +0.55 bp | −1.04 / −1.21 bp | 1.97 / 9.79 bp |
+
+- The mid move is measured from the first 100 ms grid point after the fill; positive = against the order.
+- The markout compares the mid τ later with the fill price; negative = the order is under water. A filled buy is
+  1.74 bp above the mid 10 s later under (b).
+
+**By symbol** (test, `results/maker_test_breakdown.csv`; bp per order):
+
+| | BTC | ETH | SOL |
+|---|---|---|---|
+| (b) queue, always post: saving vs taker at once | +1.102 | +0.940 | +0.768 |
+| (b) queue: fill rate | 68.2 % | 68.2 % | 78.9 % |
+| (b) queue, ridge: saving vs overlay timing | +0.779 | +0.603 | +0.525 |
+| (a) trade-through, always post: saving vs taker at once | +1.377 | +1.394 | +1.587 |
+
+Every 95 % CI in this table excludes 0. Every symbol beats taker at once on 100 % of test days, and beats the overlay
+timing on at least 97 % of them (pooled over symbols: 100 %). Buys and sells are within 0.04 bp of each other (queue,
+always post: +0.952 and +0.921).
+
+**By wait T** (test, queue rule, always post; descriptive, same run; `results/maker_test_by_T.csv`): T = 1 / 5 / 10 / 30 s
+saves +0.282 / +0.623 / +0.755 / +0.937 bp, with fill rates of 17.1 / 43.7 / 55.9 / 71.8 %.
+
+**Fee sensitivity** (taker 4 bp, the rate published until at least late September 2023; the same frozen choices;
+descriptive; `results/maker_test_fee4bp.csv`):
+- Queue rule: always-post saves +0.219 bp [+0.168, +0.266] against taker at once, with 94 % of days positive.
+- Against the overlay's timed taker order, ridge posting is −0.082 [−0.138, −0.029] and the MLP −0.079 [−0.134, −0.028].
+  At a 4 bp taker fee the timed taker order is slightly cheaper.
+- Trade-through rule: always-post saves +0.658 [+0.624, +0.692]; ridge saves +0.357 [+0.312, +0.402] against the overlay.
+
+![Maker or taker per order](results/fig_maker.png)
+
+`results/fig_maker.png`: test saving per order against taker at once, by wait T, for both fill rules. Squares mark the
+validation-chosen T; dotted lines are the overlay's timed taker orders.
+
+How to read it:
+- **Posting is worth it at a 5 bp taker fee.** Under both fill rules, on every symbol and every test day, posting beats
+  crossing at once after adverse selection, by about 3-5 times the best timing saving (ridge's 0.30 bp). The 3 bp fee gap
+  pays for it; the half-spread is small on these books.
+- **Non-fills are the cost.** A filled order costs about 2 bp. An unfilled one costs about 9.5 bp, because the price ran
+  away from it. The saving is the balance of the two, so it depends on the fill rate and on the fee gap.
+- **The order-flow models do not help choose.** Their edge at horizons ≤ 5 s is 0.05-0.27 bp per trade, small next to the
+  3 bp fee gap, so crossing early on a "price will run" signal is not worth the extra fee. Validation pushes every learned model
+  to a threshold it (almost) never reaches. sign(OFI) cannot do that, and crossing half the time costs it 0.30-0.62 bp.
+- **On arXiv 2611.14117's point.** On Binance perps, the execution use of order-flow forecasts is real but small (timing,
+  0.13-0.30 bp). The larger execution saving (0.9-1.5 bp) comes from posting passively, and needs no model.
+
+Limits specific to this analysis:
+- **Stylised fills.**
+  - (b) ignores cancellations ahead of the order (conservative). But it treats the whole displayed size at posting as
+    ahead, ignores the order's effect on others, and allows no partial fills.
+  - (a) credits a fill on any print through the price, however small the volume through.
+- **Size.** Orders are 10,000 USDT, and taker legs and chases fill at the touch with no impact. Larger orders would fill
+  passively less often and pay more when chasing.
+- **One decision per order.** The forecast is not used during the wait, e.g. to time the chase. That was not tested.
+- **Wait length.** T = 30 s is the edge of the pre-declared grid, and the saving is still rising there. Orders that must be
+  done within a second save much less (T = 1 s: +0.28 bp under the queue rule).
+- **Fees.** The maker fee is 2 bp throughout. The taker fee is 5 bp, the rate published during the test period; it was 4 bp
+  before, and the date of the change is unknown. No BNB discount, no maker rebates (VIP0 has none).
+- **Fill-probability model.** The optional model in the spirit of arXiv 2306.05479 was not built. It would need tick data
+  outside validation (train days were not downloaded again), or fitting and selecting on the same 20 validation days.
+- Same regime caveat as the rest: Q1 2024, 35 sampled days.
+
 ## Latency × fee sensitivity
 
 Each cell is a separate validation choice of horizon and threshold, frozen before test. Each entry reads: test net bp per
@@ -304,7 +468,8 @@ of rungs 3-6 are wiped out in late February 2024 (test days 22-29, the late-Febr
 - **Data quality:** ten BTC days have rows out of file order. One of them (2024-02-10) was checked in detail: two ordered
   streams interleaved, all update_ids unique, timestamps monotonic once sorted. The bar builder sorts, so they are handled;
   see PLAN.md.
-- **Cache:** `~/.cache/quant-research/p4/`, 5.6 GB in total: bars 1.1 GB, features 3.0 GB, predictions 1.6 GB.
+- **Cache:** `~/.cache/quant-research/p4/`, 5.6 GB in total: bars 1.1 GB, features 3.0 GB, predictions 1.6 GB. The
+  maker-or-taker analysis adds 1.8 GB (`maker/`: 100 ms quote grids and aggTrades of the validation and test days).
 
 ## Method
 
@@ -351,8 +516,17 @@ Fitting:
 - Rung 1 has no magnitude, so it trades every non-zero OFI.
 
 **Fees:** Binance USDT-M VIP0 is 0.05 % taker / 0.02 % maker. The cheaper tier is 0.03 % / 0.01 %. Zero is also tested.
-- These levels were fixed in the study design on 2026-11-21. Binance's fee page is rendered by JavaScript and could not be
-  fetched to re-check them.
+- These levels were fixed in the study design on 2026-11-21. Binance's live fee page is rendered by JavaScript.
+- **Checked afterwards (2026-11-23), on public Wayback Machine captures of binance.com:**
+  - the USDⓈ-M fee schedule page captured on 2023-05-31 lists VIP 0 at maker 0.02 % / taker 0.04 % (and VIP 4 at
+    0.01 % / 0.03 %, the "cheaper tier" used here);
+  - the fee FAQ ("Binance Futures Fee Structure & Fee Calculations") uses a 0.040 % USDⓈ-M taker example in its 2023-06-02
+    and 2023-09-27 captures, and "regular user's maker commission: 0.02%; taker commission: 0.05%" in its 2024-02-20 and
+    2024-03-24 captures.
+  - So the maker fee was 2 bp throughout. The taker fee was 4 bp until at least late September 2023 and 5 bp by
+    2024-02-20, inside the test period; I could not find the date of the change.
+  - At 4 bp a taker round trip costs 8 bp instead of 10 bp. That does not change the trading conclusions: the edge at
+    horizons ≤ 5 s is 0.05-0.27 bp per trade. The maker-or-taker analysis reports both taker rates.
 - No BNB discount and no funding payments are applied.
 
 **Protocol (no tuning on test):**
@@ -391,6 +565,12 @@ Fitting:
   - The frozen ridge saves 0.30 bp per order, with every one of the 35 test days positive.
   - The cost frontier shifts too: the zero-parameter rule already saves 0.13 bp, and a 72-parameter linear model captures all
     of what a neural network does.
+- **Posting first beats timing, with no model at all.**
+  - Resting each must-do order at the touch for up to 30 s, then crossing, saves 0.94 bp per order under a queue-position
+    fill rule and 1.45 bp under trade-through, after adverse selection, on every test day.
+  - Given that option, the frozen models add nothing: validation sets their thresholds where they (almost) never cross.
+  - This measures, on real fills and fees, the "execution and market making" use that arXiv 2611.14117 points to for
+    order-flow forecasts smaller than the spread plus fees.
 
 ## Limits
 
@@ -410,7 +590,9 @@ Fitting:
     count. This is optimistic, although the trade-through rule also builds in adverse selection.
   - Zero-fee results are a frictionless upper bound. They assume millions of trades a day with no capacity or impact limit.
 - **Costs.**
-  - Fee levels were fixed in the design and not re-verified on Binance's site.
+  - Fee levels were fixed in the design. A later check of archived Binance pages (see Method, Fees) shows the VIP0 taker
+    fee was 4 bp, not 5 bp, until at least late September 2023, so part of the train and validation periods (and possibly
+    early test) ran at 4 bp.
   - Funding is ignored (holds are ≤ 5 min; funding is charged every 8 h).
   - Expected cost uses the mean train spread, not the live spread.
 - **Models.**
@@ -465,6 +647,54 @@ Execution-timing overlay (added 2026-11-22, after the main test):
 15. The validation selection favours the longest window offered (60 s for the learned models), because more time can only add
     options. The by-window table shows the whole test curve.
 
+Maker or taker per order (Change 16, added 2026-11-23, after the overlay):
+
+16. **It is a new analysis** on the frozen models' cached forecasts and the overlay's orders. Its design was pre-declared in
+    PLAN.md before any maker number was computed. Its choices were made on validation and frozen (`maker_frozen.json`,
+    `58812cf42b6f085e`). The test ran once (code hash `4fd5ed01037d9d17`), after a check that the overlay's test numbers are
+    unchanged (they are identical).
+17. **It downloaded the validation and test days again** (165 symbol-days, 31.3 GB). The main study deleted the raw zips
+    after building 1-s bars, and the bars keep neither individual trades nor the queue size 100 ms after the close. Every
+    re-downloaded day matched the cached bars exactly. A dry run on two train days checked the code first; its outputs were
+    deleted.
+18. **The headline fill rule** was pre-declared as trade-through, unless the queue rule gave a lower saving for a model. It
+    did for every model, so the queue rule is the headline.
+19. **The optional fill-probability model was not built** (see the limits of that section).
+20. **Fees were checked on archived Binance pages** during this change. The VIP0 taker fee was 4 bp, not 5 bp, until at
+    least late September 2023. The main study's numbers are unchanged; the maker analysis reports both taker rates.
+21. Before the test run, the test-stage scoring and report code were run on validation data in a scratch folder. The scoring
+    was moved into a function for that, with no change to what it computes.
+
+## Related work (2026)
+
+Abstracts checked on arxiv.org on 2026-11-23; only these points are cited.
+
+- Shabashev, "Fine-Tuning an Order-Flow Foundation Model for Sub-Second Forecasting",
+  [arXiv 2611.14117](https://arxiv.org/abs/2611.14117) (November 2026).
+  - A 300M-parameter generative model, pretrained on Level-3 order-flow data from Bitstamp and Bitfinex, then fine-tuned to
+    predict microprice returns and their realised volatility. It beats classical baselines such as gradient boosting on
+    handcrafted features at sub-second horizons, and transfers zero-shot to assets it was not fine-tuned on.
+  - Its abstract states that the predicted microprice moves are smaller than the bid-ask spread plus fees, "so the natural
+    applications are in execution and market making".
+  - This project measures those two applications with numbers, on Binance perps, with explicit fills and fees, for models
+    of 0 to 7,749 parameters: as an execution timer, and as a maker-or-taker choice per order.
+- Mohl, Bismuth, Marti-Shahandeh, Nigmatulin, Li, Zohren, Foerster, Cucuringu & Calinescu, "Understanding the Inner Workings
+  of a State-Space Foundation Model for Limit Order Books", [arXiv 2610.28753](https://arxiv.org/abs/2610.28753)
+  (October 2026).
+  - An 8.2M-parameter Mamba-3 state-space model, trained autoregressively on the tokenized message stream of eight large-cap
+    US equities.
+  - Order-flow imbalance is decodable from it at R² ≈ 0.59, "far above controls and baselines". OFI is the input of rungs
+    1-2 here, and part of every other rung's features.
+- Arroyo, Cartea, Moreno-Pino & Zohren, "Deep Attentive Survival Analysis in Limit Order Books: Estimating Fill Probabilities
+  with Convolutional-Transformers", [arXiv 2306.05479](https://arxiv.org/abs/2306.05479) (2023).
+  - The choice between a passive and an aggressive order depends on the passive order's fill probability. They estimate
+    fill times of limit orders at different book levels with a convolutional-Transformer encoder and a monotonic decoder,
+    scored as survival models with proper scoring rules.
+  - The maker-or-taker analysis here uses the simplest version of that choice: the frozen forecast's sign and size, with
+    two explicit fill rules. A fill-probability model was optional and was not built (see Change 16).
+- Cont, Kukanov & Stoikov, "The Price Impact of Order Book Events", *J. Financial Econometrics* 12(1):47-88, 2014
+  ([arXiv 1011.6402](https://arxiv.org/abs/1011.6402)): the OFI definition used throughout (details below).
+
 ## Literature (verified by me, 2026-11-21; only these points are cited)
 
 - Cont, Kukanov & Stoikov, "The Price Impact of Order Book Events", *J. Financial Econometrics* 12(1):47-88, 2014
@@ -502,13 +732,18 @@ export PYTHONIOENCODING=utf-8
 .venv/Scripts/python -m ofp.cli overlay_validate  # 44-config grid on validation, choose + freeze overlay_frozen.json
 .venv/Scripts/python -m ofp.cli overlay_test      # once; a rerun needs --force and is logged in overlay_test_log.jsonl
 .venv/Scripts/python -m ofp.cli overlay_report    # overlay_tables.md, fig_overlay.png, fig_summary.png
-.venv/Scripts/python -m pytest            # 19 tests
+# maker or taker per order (Change 16; frozen models, cached forecasts)
+.venv/Scripts/python -m ofp.cli maker_data        # re-download the 165 val/test symbol-days (~31 GB, ~45 min), verify vs the bars
+.venv/Scripts/python -m ofp.cli maker_validate    # 736-config grid on validation, choose + freeze maker_frozen.json
+.venv/Scripts/python -m ofp.cli maker_test        # once (checks the overlay numbers first); a rerun needs --force and is logged
+.venv/Scripts/python -m ofp.cli maker_report      # maker_tables.md, fig_maker.png
+.venv/Scripts/python -m pytest            # 26 tests
 ```
 
 Every process pins OMP/MKL/OpenBLAS/Polars to 2 threads; torch and LightGBM also use 2 threads. Caches go to
 `~/.cache/quant-research/p4/`. `scripts/thin_slice.py` is the first end-to-end slice: 6 BTC days, linear OFI, taker simulation.
 
-**Tests** (`tests/`, 19 pass):
+**Tests** (`tests/`, 26 pass):
 1. CKS OFI on a hand-made update sequence;
 2. targets strictly in the future;
 3. taker fills at ask/bid after each latency on a toy book, plus the maker trade-through rule;
@@ -522,6 +757,14 @@ Every process pins OMP/MKL/OpenBLAS/Polars to 2 threads; torch and LightGBM also
      invalid rows never favourable;
    - leak tests: perturbing forecasts and quotes after decision row t, or raw quotes and trades after the close of t, leaves
      every decision up to t, and every fill priced before close(t), unchanged.
+9. maker or taker (`test_maker.py`):
+   - the 100 ms quote grid built from streamed, shuffled CSV chunks equals the bars' close and close + 100 ms quotes;
+   - trade-through fills only on a print strictly through the limit, strictly after posting, inside the wait;
+   - the queue rule needs opposite-aggressor volume at or through the limit above queue ahead + order size;
+   - T = 0 (and crossing every order) equals taker at once; filled orders pay the maker fee, chased ones the taker fee;
+   - leak test from raw data: perturbing quotes, trades and forecasts after the cut leaves every decision, fill and cost of
+     orders whose wait ends before it unchanged;
+   - with the local cache: the overlay's published test numbers are reproduced unchanged.
 
 ## Files
 
@@ -548,8 +791,15 @@ The `results/` folder:
 | `overlay_frozen.json` | the frozen overlay choices |
 | `overlay_test.csv`, `overlay_test_by_window.csv`, `overlay_test_breakdown.csv` | overlay test results |
 | `overlay_test_log.jsonl` | the overlay test log |
+| `maker_tables.md` | all maker-or-taker tables, including validation choices and the test log |
+| `maker_validation.csv` | the 736 maker-or-taker validation configurations |
+| `maker_frozen.json` | the frozen maker-or-taker choices |
+| `maker_test.csv`, `maker_test_breakdown.csv`, `maker_test_by_T.csv`, `maker_test_fee4bp.csv` | maker-or-taker test results |
+| `maker_test_log.jsonl` | the maker-or-taker test log (with the overlay reproduction check) |
 | `fig_*.png` | figures |
 
 Elsewhere:
-- Code: `src/ofp/` — config, bars, download, features, models, sim, metrics, pipeline, report, overlay, cli.
+- Code: `src/ofp/` — config, bars, download, features, models, sim, metrics, pipeline, report, overlay, maker, cli.
 - Data manifest: `~/.cache/quant-research/p4/manifest.csv`, with per-day raw sizes and the bar verification counts.
+- Maker-or-taker data: `~/.cache/quant-research/p4/maker/` (100 ms quote grids and aggTrades of the val/test days) and its
+  `manifest.csv`, with every per-day verification flag.
