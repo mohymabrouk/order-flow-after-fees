@@ -1,8 +1,9 @@
 """Command line: python -m ofp.cli <stage>.
 
 Stages, in order: download, build, train, validate, freeze, test, report; then the execution-timing overlay
-(a later, separate analysis on the frozen models): overlay_validate, overlay_test, overlay_report. Each writes its outputs to files, so a stage can
-be rerun alone. `test` runs once: it refuses to run again unless --force (which is logged).
+(a later, separate analysis on the frozen models): overlay_validate, overlay_test, overlay_report; then maker-or-taker per
+order (Change 16): maker_data, maker_validate, maker_test, maker_report. Each writes its outputs to files, so a stage can
+be rerun alone. `test`, `overlay_test` and `maker_test` run once: they refuse to run again unless --force (which is logged).
 """
 
 import argparse
@@ -25,11 +26,14 @@ def setup_logging(stage: str) -> None:
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="ofp")
     p.add_argument("stage", choices=["download", "build", "train", "validate", "freeze", "test", "report",
-                                      "overlay_validate", "overlay_test", "overlay_report"])
+                                      "overlay_validate", "overlay_test", "overlay_report",
+                                      "maker_data", "maker_validate", "maker_test", "maker_report"])
     p.add_argument("--symbols", default=None, help="comma-separated symbols (default: all in config)")
     p.add_argument("--max-days", type=int, default=None, help="download/build: only the first N sampled days (thin slice)")
     p.add_argument("--only", default=None, help="train: comma-separated rungs to (re)train")
     p.add_argument("--force", action="store_true", help="test stage: allow a second (logged) test run")
+    p.add_argument("--split", default="all", choices=["all", "val", "test", "dev"],
+                   help="maker_data: which days to re-download (dev = two train days for a code dry run)")
     a = p.parse_args(argv)
     setup_logging(a.stage)
     symbols = a.symbols.split(",") if a.symbols else None
@@ -63,6 +67,18 @@ def main(argv=None) -> None:
     elif a.stage == "overlay_report":
         from ofp import overlay
         overlay.report()
+    elif a.stage == "maker_data":  # Change 16: re-download val/test raw files, reduce, verify against the bars
+        from ofp import maker
+        maker.prepare(split=a.split)
+    elif a.stage == "maker_validate":
+        from ofp import maker
+        maker.validate()
+    elif a.stage == "maker_test":
+        from ofp import maker
+        maker.test(force=a.force)
+    elif a.stage == "maker_report":
+        from ofp import maker
+        maker.report()
 
 
 if __name__ == "__main__":
